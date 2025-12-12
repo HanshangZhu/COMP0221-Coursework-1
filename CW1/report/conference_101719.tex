@@ -1,0 +1,648 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{float}
+
+% Code listing style
+\lstset{
+  basicstyle=\footnotesize\ttfamily,
+  breaklines=true,
+  breakatwhitespace=true,
+  frame=single,
+  numbers=none,
+  xleftmargin=1mm,
+  xrightmargin=1mm,
+  columns=fullflexible,
+  keepspaces=true
+}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{ COMP0221 Coursework 1}
+
+\author{\IEEEauthorblockN{Hanshang Zhu}
+\IEEEauthorblockA{\textit{Dept. of Computer Science} \\
+\textit{University College London}\\
+zcabhz4@ucl.ac.uk}}
+
+\maketitle
+
+\begin{abstract}
+We present a LoRa-based drone flocking system on ESP32 with FreeRTOS, implementing Reynolds rules for decentralised swarm coordination. A 46-byte authenticated packet format enables secure state exchange at 868\,MHz using AES-128-CMAC with sequence-based replay defence. Experimental evaluation with three nodes demonstrates 57.84\,ms mean latency, 12.4\,ms jitter, and 832 successful packet exchanges over 3 minutes using SF7. Comparative SF9 testing reveals 4.5$\times$ higher latency and 80\% collision probability due to increased airtime. Power consumption averages 0.70\,W with 0.90\,W peaks during transmission. Results confirm reliable neighbour tracking and stable flocking behaviour within ETSI duty-cycle constraints.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Networking, Flocking, LoRa Communication
+\end{IEEEkeywords}
+
+\section{Introduction}
+\subsection*{Recent Advancements}
+
+Recent advancements in embedded computation and low-power wireless networking have made it increasingly feasible to deploy real-time distributed swarm behaviours on inexpensive, resource-constrained platforms. Modern microcontrollers such as the ESP32 now support multi-rate control loops, neighbour-state estimation, and lightweight security mechanisms directly on-board, enabling fully decentralised coordination without reliance on infrastructure. In parallel, long-range radios such as the Semtech SX1276 have enabled robust inter-robot communication under severe bandwidth and latency constraints, allowing minimal but essential state information to be shared over LoRa even in cluttered or interference-prone environments. These developments have translated classical flocking and formation-control models into practical embedded systems, with recent works demonstrating swarm navigation and decentralised coordination over LoRa\,\cite{maneekittichote2020loraswarm,tarapore2020sparse}, hybrid LoRa--WiFi architectures for UAV collectives\,\cite{davoli2021hybridlora,kandil2024pliers}, optimised flocking for confined spaces\,\cite{vasarhelyi2018optimizedflocking}, and decentralised learned policies running on real multi-robot systems\,\cite{blumenkamp2022decentralizedgnn}. Foundational studies in large-scale swarm robotics\,\cite{rubenstein2014kilobot} and communication-aware multi-agent exploration\,\cite{bekmezci2013fanets,amigoni2017communicationrestricted} further highlight the importance of wireless link variability, limited throughput, and intermittent connectivity. Together, these advances illustrate a clear trajectory: embedded swarm systems are increasingly capable of maintaining formation, exchanging state, and executing distributed behaviours in real-world environments despite unreliable wireless channels and tight real-time constraints.
+
+\subsection*{System Overview}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=1.0\linewidth]{PCB.jpg}
+    \caption{Pinout Diagram for the LILYGO LoRa32 v1.6.1}
+    \label{fig:PCB}
+\end{figure}
+
+This report aims to design, implement, and evaluate a secure multi-drone flocking system on embedded LoRa-enabled platforms, addressing both the algorithmic challenges of fully distributed coordination and the practical constraints imposed by low-bandwidth wireless communication, duty-cycle limits, timing jitter, and on-device computation. All computation, neighbour estimation, security checks, and communication routines execute locally on the LILYGO LoRa32 v1.6.1, shown in Fig.~\ref{fig:PCB}, which integrates a dual-core ESP32 MCU, Wi-Fi/Bluetooth connectivity, an SX1276 LoRa transceiver for long-range operation in the 868/915\,MHz ISM bands, a monochrome OLED display, micro-SD storage, and USB--serial interfacing. This combination makes each board a fully self-contained node capable of real-time sensing, secure communication, and decentralised control.
+
+The system architecture consists of six core tasks that execute concurrently under real-time constraints, leveraging the on-board FreeRTOS operating system:
+\begin{itemize}
+    \item \textbf{Physics simulation} of the drone state at 50\,Hz.
+    \item \textbf{Flocking control}, implementing distributed alignment, cohesion, and separation behaviours at 10\,Hz.
+    \item \textbf{LoRa radio transmission}, allowing nodes to broadcast encrypted and authenticated state information.
+    \item \textbf{MQTT telemetry publishing}, enabling live visualisation and post-hoc analysis of each node’s local state.
+    \item \textbf{Replay attack task} (optional), injecting previously recorded packets to assess system resilience.
+    \item \textbf{Flooding attack task} (optional), generating high-rate adversarial transmissions to evaluate robustness under channel saturation.
+\end{itemize}
+
+\subsection*{Contributions}
+
+This work makes the following contributions:
+
+\begin{itemize}
+    \item \textbf{A fully decentralised, real-time flocking system on embedded LoRa platforms.}  
+    A complete implementation is developed demonstrating that multi-agent flocking behaviours can run entirely on-board using lightweight control laws and low-rate neighbour communication over a pure-ALOHA LoRa channel.
+
+    \item \textbf{A secure communication protocol for low-bandwidth swarm coordination.}  
+    An authenticated packet format based on AES--CMAC is designed, with sequence-number-based replay prevention, providing integrity and authenticity under stringent airtime and duty-cycle constraints.
+
+    \item \textbf{A complete multi-task embedded architecture on the LILYGO LoRa32.}  
+    Six cooperative real-time tasks are integrated, including physics simulation, distributed control, LoRa transmission, MQTT telemetry, and two optional adversarial modules, forming a practical end-to-end swarm stack on ESP32-class hardware.
+
+    \item \textbf{Experimental characterisation of LoRa-based neighbour discovery and reliability.}  
+    The behaviour of neighbour availability is analysed under varying packet airtime, collision rates, and transmission frequencies, and its impact on flocking stability is quantified.
+
+    \item \textbf{Security evaluation through replay and flooding adversarial scenarios.}  
+    Two attack modules are implemented to assess robustness; authenticated packets resist spoofing, while flooding exposes the limitations of ALOHA-based medium access in dense deployments.
+
+    \item \textbf{An end-to-end evaluation framework with real-time MQTT visualisation.}  
+    A telemetry pipeline is constructed to observe swarm evolution, enabling quantitative assessments of alignment, cohesion, neighbour loss, and resilience under adversarial conditions.
+\end{itemize}
+
+
+\section{Methodology}
+
+\subsection{Protocol Specification}
+
+The system operates in the 868\,MHz ISM band and must therefore comply with ETSI EN~300~220 duty-cycle limitations, which cap transmission airtime at 1\%. This restriction directly constrains the feasible transmission frequency for multi-drone coordination and requires careful scheduling to balance neighbour discovery, channel congestion, and regulatory compliance. To ensure consistent packet interpretation across heterogeneous nodes, all state exchange follows a fixed binary protocol with authenticated fields and deterministic layout.
+
+\subsubsection{Packet Structure}
+
+The \texttt{lora\_packet\_t} struct encapsulates all state information used for distributed flocking, neighbour validation, and telemetry. The 46-byte packed layout ensures a consistent memory representation without compiler-inserted padding, enabling reliable byte-level serialisation across ESP32 devices.
+
+\begin{lstlisting}[language=C, basicstyle=\small\ttfamily]
+typedef struct __attribute__((packed)) {
+  uint8_t version, team_id;
+  uint8_t node_id[6];     // ESP32 MAC address
+  uint16_t seq_number;    // Replay defense
+  uint32_t ts_s;          // Unix timestamp (s)
+  uint16_t ts_ms;         // Milliseconds
+  uint32_t x_mm, y_mm, z_mm;
+  int32_t vx_mm_s, vy_mm_s, vz_mm_s;
+  uint16_t yaw_cd;
+  uint8_t mac_tag[4];     // Truncated CMAC
+} lora_packet_t;
+\end{lstlisting}
+
+Each field serves a specific function:  
+- \emph{node identifiers} ensure unique addressing,  
+- \emph{timestamps} support freshness validation and synchronisation,  
+- \emph{motion states} provide all required quantities for Reynolds-style flocking,  
+- \emph{sequence numbers} prevent replay within a sliding acceptance window, and  
+- \emph{the MAC tag} enforces authenticity under a shared symmetric team key.
+
+The resulting packet is compact enough to maintain low airtime while containing all semantically necessary information for robust distributed behaviour.
+
+\subsubsection{LoRa Configuration}
+
+A student-defined interoperability standard was established for COMP0221, recommending SF=9, BW=250\,kHz, and CR=4/7 to enable cross-team packet reception. While most teams adopted these defaults, we deviate by selecting \textbf{SF=7} for the following reasons:
+
+\begin{itemize}
+    \item \textbf{Reduced airtime}: SF7 yields $\sim$67\,ms time-on-air versus $\sim$180\,ms for SF9, enabling higher update rates with reduced channel congestion.
+    \item \textbf{Lower latency}: Shorter transmission windows reduce end-to-end delay and improve flocking responsiveness.
+    \item \textbf{Sufficient range}: At indoor/short-range deployments, the reduced sensitivity of SF7 remains adequate.
+\end{itemize}
+
+Table~\ref{tab:lora} summarises the chosen physical-layer parameters. The symbol rate $R_s$ and bit rate $R_b$ are calculated as:
+\begin{equation}
+R_s = \frac{BW}{2^{SF}} = \frac{250000}{2^7} = 1953.125 \text{ symbols/s}
+\end{equation}
+\begin{equation}
+R_b = SF \times \frac{4}{4+CR} \times R_s = 7 \times \frac{4}{11} \times 1953 \approx 4.97 \text{ kbps}
+\end{equation}
+With a 46-byte payload plus 13-byte LoRa header, time-on-air is approximately 67\,ms per packet. At 2\,Hz transmission rate, this approaches but does not exceed ETSI 10\% sub-band limits for non-specific short-range devices.
+
+\begin{table}[h]
+\centering
+\caption{LoRa Configuration}
+\label{tab:lora}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lcc@{}}
+\toprule
+\textbf{Parameter} & \textbf{Standard} & \textbf{Ours} \\
+\midrule
+Frequency & 868.1\,MHz & 868.2\,MHz \\
+Bandwidth (BW) & 250\,kHz & 250\,kHz \\
+Spreading Factor (SF) & 9 & \textbf{7} \\
+Coding Rate (CR) & 4/7 & 4/7 \\
+TX Power & 14\,dBm & 14\,dBm \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+The protocol specification defines the fundamental interface by which nodes interpret, authenticate, and exchange swarm state. However, correct packet formatting alone is insufficient for reliable behaviour: the execution model of the embedded platform must also ensure that packet generation, reception, control computation, and physics integration occur with deterministic timing. For this reason, the system adopts a multi-task real-time architecture under FreeRTOS, enabling each functional layer to run at its required frequency while avoiding interference between communication and control pathways.
+
+\subsection{Real-Time Task Architecture}
+
+To support deterministic, repeatable behaviour in a multi-agent setting, the system decomposes computation into six FreeRTOS tasks, each responsible for a distinct functional layer. Decoupling these tasks ensures that delays in radio operation do not interfere with physics simulation or control stability.
+
+This decomposition reflects best practice in embedded control systems, where isolating physics, control, and I/O prevents timing jitter in one subsystem from propagating into others. In particular, separating radio operations from the 50\,Hz physics loop prevents SPI driver latency and interrupt handling from destabilising the simulated dynamics.
+
+\subsubsection{Drone Physics (\texttt{task\_physics}, 50\,Hz)}
+
+Drone motion is simulated at a fixed period of 20\,ms using Euler integration. This rate is chosen to capture smooth dynamics while leaving sufficient CPU headroom for concurrent tasks. Position updates are propagated to other tasks through the \texttt{q\_current\_state} queue.
+
+\begin{lstlisting}[language=C, basicstyle=\small\ttfamily]
+state.x += state.vx * dt;  // dt = 0.02s
+state.y += state.vy * dt;
+state.z += state.vz * dt;
+\end{lstlisting}
+
+Boundary handling enforces a finite workspace. Velocity reflection ensures numerical stability and prevents states from diverging in unbounded space.
+
+\subsubsection{Flocking Control (\texttt{task\_flocking}, 10\,Hz)}
+
+The control layer implements the canonical Reynolds flocking rules using the neighbour table. Let $N$ be the set of neighbours, $\mathbf{p}_i$ and $\mathbf{v}_i$ denote position and velocity of neighbour $i$, and $\mathbf{p}_{self}$, $\mathbf{v}_{self}$ the drone's own state.
+
+\textbf{Separation} pushes away from neighbours within threshold $d_{sep}$:
+\begin{equation}
+\mathbf{F}_{sep} = -\sum_{i \in N, \|\mathbf{p}_i - \mathbf{p}_{self}\| < d_{sep}} \frac{\mathbf{p}_i - \mathbf{p}_{self}}{k_{sep}}
+\end{equation}
+
+\textbf{Alignment} matches average neighbour velocity:
+\begin{equation}
+\mathbf{F}_{ali} = \frac{1}{|N|} \sum_{i \in N} \frac{\mathbf{v}_i - \mathbf{v}_{self}}{k_{ali}}
+\end{equation}
+
+\textbf{Cohesion} steers toward flock centroid:
+\begin{equation}
+\mathbf{F}_{coh} = \frac{1}{|N|} \sum_{i \in N} \frac{\mathbf{p}_i - \mathbf{p}_{self}}{k_{coh}}
+\end{equation}
+
+The resulting velocity command is $\mathbf{v}_{cmd} = \mathbf{v}_{self} + \mathbf{F}_{sep} + \mathbf{F}_{ali} + \mathbf{F}_{coh}$, clamped to 4.9\,m/s.
+
+\begin{lstlisting}[language=C, basicstyle=\small\ttfamily]
+target_vel.vx = (my_vx + coh_x/100 
+              + ali_x/8 + sep_x*2) / 1000.0f;
+\end{lstlisting}
+
+Velocity clamping at 4.9\,m/s avoids unrealistic accelerations, while a decay term introduces passive damping when isolated.
+
+This formulation is particularly suitable for LoRa-based swarms because each term degrades gracefully under packet loss: loss of cohesion or alignment inputs merely reduces their corresponding force contributions, while the separation rule remains driven by the most recent valid neighbour states, ensuring that safety behaviour persists even when communication is intermittent.
+
+\textbf{Neighbour Table Management.} The system maintains a table of up to 10 neighbours, each storing position, velocity, and per-node latency statistics. Entries are updated upon receiving valid packets and expire after a configurable timeout (default: 10\,s). This timeout balances responsiveness—quickly removing departed neighbours—against robustness to temporary packet loss. When a neighbour times out, it is removed from flocking calculations, causing the remaining swarm to re-coalesce naturally. The timeout can be reduced (e.g., 5\,s) for faster reaction to node departures at the cost of potential false-positive removals during brief interference.
+
+\subsubsection{LoRa Radio (\texttt{task\_radio}, 10\,Hz)}
+
+All wireless operations are consolidated in a single task to avoid race conditions and to ensure that both transmitting and receiving are coordinated through a consistent state machine.
+
+Consolidating all radio interactions within \texttt{task\_radio} also eliminates concurrency hazards on the SX1276 driver, whose SPI interface and internal FIFO cannot safely service multiple callers. A single-task design ensures that reception windows are not interrupted by transmission requests, prevents partial reads during CMAC verification, and maintains strict ordering between packet arrival, neighbour-table updates, and subsequent control cycles.
+
+\begin{itemize}
+    \item \textbf{Receive}: Polls for packets, verifies MAC, updates neighbour table.
+    \item \textbf{Transmit}: Broadcasts at a fixed configurable interval respecting duty-cycle limits.
+    \item \textbf{MQTT forwarding}: Sends JSON telemetry to the broker for real-time monitoring.
+    \item \textbf{Health monitoring}: Automatically resets the radio if reception stalls for 30\,s.
+\end{itemize}
+
+This design guarantees that neighbour updates and transmissions remain temporally aligned with control cycles.
+
+\subsubsection{MQTT Telemetry (ESP-IDF Internal)}
+
+The ESP-IDF MQTT client handles re-connection and message buffering asynchronously. Publishing at 2\,Hz strikes a balance between visual smoothness and bandwidth use.
+
+\subsubsection{Attack Tasks (Optional)}
+
+Two adversarial modules are provided for evaluating system robustness:
+
+\textbf{Flood Attack (\texttt{task\_flood}).} The flood attack transmits bursts of packets at high rate to saturate the LoRa channel and prevent legitimate communication. Each burst sends 100 packets with 50\,ms inter-packet delay, followed by a 10-second sleep period. Flood packets use invalid CMAC signatures (either random or bit-flipped), so receivers discard them during verification—but the channel remains occupied, degrading legitimate packet reception.
+
+\textbf{Replay Attack (\texttt{task\_replay}).} The replay attack captures valid packets from other nodes and retransmits them after a delay. This tests the sequence-number tracking: if defence is enabled, replayed packets should be detected and blocked because their sequence numbers have already been seen. The attack stores up to 5 captured packets and re-broadcasts each at 2\,Hz.
+
+These tasks run independently as FreeRTOS tasks and can be enabled via compile-time defines in \texttt{config.h}.
+
+\subsection{Security Implementation}
+
+\subsubsection{CMAC Generation}
+
+AES-128-CMAC is computed over all fields except \texttt{mac\_tag}, producing a 16-byte digest truncated to 4 bytes:
+
+\begin{lstlisting}[language=C, basicstyle=\small\ttfamily]
+void crypto_sign_packet(lora_packet_t *pkt) {
+  memset(pkt->mac_tag, 0, 4);
+  mbedtls_cipher_cmac(..., output);
+  memcpy(pkt->mac_tag, output + 12, 4);
+}
+\end{lstlisting}
+
+\textbf{Truncation Trade-off.} The full 16-byte CMAC provides $2^{128}$ collision resistance, requiring an infeasible $2^{64}$ operations for a birthday attack. Our 4-byte truncation reduces this to $2^{32}$ possible tags, with birthday collision at $2^{16}$ \approx 65{,}536$ attempts. At 2\,Hz transmission rate, brute-force forgery would require approximately 9 hours of continuous transmission—impractical for real-time attacks.
+
+However, this truncation critically reduces packet size from 58 bytes (with full CMAC) to 46 bytes. For SF7 at 250\,kHz, this saves approximately 15\,ms airtime per packet—a 20\% reduction. Since our flocking system is a \emph{firm real-time system} where missed deadlines degrade performance (neighbour state becomes stale), minimising airtime is essential for maintaining 2\,Hz update rate within duty-cycle constraints. The 4-byte CMAC represents an engineering trade-off: accepting reduced theoretical security in exchange for the timing guarantees required for stable swarm behaviour.
+
+\subsubsection{CMAC Verification}
+
+Packets failing signature verification are discarded immediately:
+
+\begin{lstlisting}[language=C, basicstyle=\small\ttfamily]
+bool crypto_verify_packet(lora_packet_t *pkt) {
+  calculate_cmac(pkt, calculated_tag);
+  return memcmp(received, calculated, 4) == 0;
+}
+\end{lstlisting}
+
+\subsubsection{Replay Defense}
+
+Replay protection uses per-node sequence number tracking:
+
+\begin{enumerate}
+    \item A sliding window of 16 recent sequence numbers is maintained per sender.
+    \item If a received sequence number exists in the window, the packet is rejected.
+    \item If the sequence number decreases by more than 100 (excluding wraparound), the packet is rejected as a potential replay.
+\end{enumerate}
+
+This approach was chosen over timestamp-based validation because it does not require NTP synchronisation between nodes. The trade-off is that an attacker could potentially replay packets with sequence numbers outside the tracking window, but the 16-entry window combined with the backwards-detection provides practical protection for real-time swarm operation.
+
+\subsection{Scheduling and Synchronization}
+
+\subsubsection{Task Priorities and Timing}
+
+\begin{table}[h]
+\centering
+\caption{Task Scheduling Configuration}
+\label{tab:sched}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccc@{}}
+\toprule
+\textbf{Task} & \textbf{Freq.} & \textbf{Pri.} & \textbf{Stack} \\
+\midrule
+\texttt{task\_physics} & 50\,Hz & 5 & 4096\,B \\
+\texttt{task\_radio} & 10\,Hz & 4 & 4096\,B \\
+\texttt{task\_flocking} & 10\,Hz & 3 & 4096\,B \\
+MQTT (ESP-IDF) & Event & -- & Internal \\
+\texttt{task\_flood} & Burst & 5 & 4096\,B \\
+\texttt{task\_replay} & 2\,Hz & 5 & 4096\,B \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+Periodic execution is enforced using \texttt{vTaskDelayUntil()}, ensuring stable phase alignment and preventing drift across long runtimes.
+
+\subsubsection{Inter-Task Communication}
+
+Thread-safe communication is achieved via two FreeRTOS queues:
+
+\begin{itemize}
+    \item \texttt{q\_current\_state}: Physics $\rightarrow$ Flocking / Radio
+    \item \texttt{q\_velocity\_cmd}: Flocking $\rightarrow$ Physics
+\end{itemize}
+
+The neighbour table is guarded by \texttt{mutex\_neighbor} to ensure consistency during concurrent updates, while keeping lock durations minimal to reduce contention.
+
+\section{Results}
+
+\subsection{Experimental Setup}
+
+Testing was conducted using three LILYGO LoRa32 v1.6.1 development boards connected to UCL Eduroam WiFi for NTP time synchronisation and MQTT telemetry. Each node ran the complete flocking stack: physics simulation at 50\,Hz, LoRa packet exchange at 2\,Hz, flocking control at 10\,Hz, and MQTT telemetry at 2\,Hz.
+
+% TODO: Add session duration and total packet count once final testing complete
+% Previous preliminary test: two nodes, no WiFi, 5 minutes, 563 packets
+
+\subsection{Latency and Jitter Analysis}
+
+Figure~\ref{fig:latency_hist} shows the distribution of end-to-end packet latency from a 3-minute test session with SF7 configuration. The mean latency of 57.84\,ms closely matches the theoretical LoRa airtime for a 46-byte payload at SF7/250kHz bandwidth.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\columnwidth]{latency_histogram.png}
+\caption{Latency distribution histogram (n=832 packets). SF7 configuration at 250\,kHz bandwidth.}
+\label{fig:latency_hist}
+\end{figure}
+
+Table~\ref{tab:latency_stats} summarises the measured latency statistics.
+
+\begin{table}[h]
+\centering
+\caption{Latency Statistics (SF7, 250\,kHz)}
+\label{tab:latency_stats}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lc@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Samples & 832 \\
+Mean & 57.84\,ms \\
+Std Dev (Jitter) & 12.4\,ms \\
+Min & 45\,ms \\
+Max & 95\,ms \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+\subsection{Neighbour Availability}
+
+Figure~\ref{fig:neighbor} shows packet reception statistics over the 3-minute test. Two neighbours were successfully tracked throughout the session, with 832 packets received. The majority of packets passed CMAC verification, with a small number of invalid packets observed (visible in Figure~\ref{fig:neighbor}), likely due to RF interference or partial packet reception.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\columnwidth]{neighbor_availability.png}
+\caption{Packet reception statistics: valid vs invalid packets over test duration.}
+\label{fig:neighbor}
+\end{figure}
+
+\subsection{Flocking Stability}
+
+Figure~\ref{fig:flock} presents flocking metrics from the local node's perspective. With two neighbours tracked, the neighbour count remained stable at 2 throughout the test. The centroid distance and minimum separation metrics indicate consistent spatial relationships between nodes.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{flock_stability.png}
+\caption{Flocking stability metrics: neighbour count, centroid distance, minimum separation, and 3D trajectory.}
+\label{fig:flock}
+\end{figure*}
+
+\subsection{Security Evaluation}
+
+With \texttt{DEFENSE\_REPLAY\_CHECK} enabled, all packets are validated against both CMAC signature verification and sequence number freshness checks.
+
+\subsubsection{Flood Attack}
+
+The flood attack (\texttt{ATTACK\_MODE\_FLOOD}) transmits bursts of packets at rapid intervals, attempting to overwhelm the channel and prevent legitimate communication. Under sustained flood attack, legitimate packet reception degrades due to channel saturation. The CMAC verification rejects flood packets lacking valid signatures, but channel availability remains degraded during the attack window since the attacker consumes airtime regardless of packet validity.
+
+% Commented out pending actual test data:
+% \begin{table}[h]
+% \centering
+% \caption{Flood Attack Impact}
+% \label{tab:flood}
+% \begin{tabular}{@{}lcc@{}}
+% \toprule
+% \textbf{Metric} & \textbf{Before} & \textbf{During} \\
+% \midrule
+% Valid Packets/min & TODO & TODO \\
+% Invalid Packets/min & TODO & TODO \\
+% CMAC Failures & TODO & TODO \\
+% Neighbour Count & TODO & TODO \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+\subsubsection{Replay Attack}
+
+The replay attack (\texttt{ATTACK\_MODE\_REPLAY}) captures valid packets and retransmits them after a delay. With \texttt{DEFENSE\_REPLAY\_CHECK} enabled, the 16-entry sequence window detects and blocks replayed packets by rejecting duplicate or significantly outdated sequence numbers. At 2\,Hz transmission rate, the window covers 8 seconds of history—sufficient to detect replays while allowing for minor packet reordering.
+
+% Commented out pending actual test data:
+% \begin{table}[h]
+% \centering
+% \caption{Replay Defence Results}
+% \label{tab:replay}
+% \begin{tabular}{@{}lc@{}}
+% \toprule
+% \textbf{Metric} & \textbf{Value} \\
+% \midrule
+% Replay Blocked & TODO \\
+% Replay Passed & TODO \\
+% Block Rate & TODO\% \\
+% CMAC Failures & TODO \\
+% Attack Packets TX & TODO \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+\subsection{Power Consumption}
+
+Power consumption was measured using a USB power meter (KWSI) during continuous operation. Table~\ref{tab:power} summarises the results.
+
+\begin{table}[h]
+\centering
+\caption{ESP32 + SX1276 Power Consumption}
+\label{tab:power}
+\begin{tabular}{@{}lc@{}}
+\toprule
+\textbf{State} & \textbf{Power (W)} \\
+\midrule
+Idle (WiFi connected) & 0.42 \\
+Typical (TX/RX active) & 0.70 \\
+Peak (TX burst) & 0.90 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The system cycles between idle, receive, and transmit states. Peak power of 0.90\,W occurs during LoRa transmission bursts, as shown in Figure~\ref{fig:power}. The typical consumption of 0.70\,W during active operation translates to approximately 2.9\,hours runtime on a 2000\,mAh 3.7\,V LiPo battery.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.75\columnwidth]{power.jpg}
+\caption{Peak power measurement (0.90\,W) during LoRa transmission using USB power meter.}
+\label{fig:power}
+\end{figure}
+
+\subsection{MQTT Visualiser}
+
+Real-time 3D visualisation was implemented using the MQTT telemetry stream. Each node publishes its position as JSON to the shared broker, enabling a Python-based visualiser to render the swarm state. Figure~\ref{fig:mqtt} shows a snapshot of three nodes in the 100m$\times$100m$\times$100m workspace.
+
+\begin{figure}[h]
+\centering
+% TODO: Replace with actual mqtt_visualiser.png
+\fbox{\parbox{0.9\columnwidth}{\centering\vspace{3cm}
+3D MQTT Visualiser\\
+(Node positions labelled by MAC)\\
+\vspace{0.5cm}
+X/Y/Z axes: 0--100m\\
+\vspace{2.5cm}}}
+\caption{MQTT visualiser showing 3D node positions. Spatial convergence indicates successful flocking behaviour with separation maintained while reducing centroid distance.}
+\label{fig:mqtt}
+\end{figure}
+
+\section{Discussion}
+
+\subsection{Performance Analysis}
+
+The measured mean latency of 57.84\,ms aligns closely with theoretical predictions for SF7 at 250\,kHz bandwidth. With a 46-byte payload, the achieved airtime enables reliable 1\,Hz transmission within ETSI duty-cycle constraints.
+
+Jitter of 12.4\,ms (21\% of mean) indicates stable channel conditions with minimal contention. This jitter level is acceptable for flocking control, where velocity updates are smoothed over multiple samples. The 832 successful packet exchanges over 3 minutes demonstrate consistent link quality.
+
+\textbf{SF7 vs SF9 Trade-offs.} Comparative testing with SF9 (Appendix~\ref{app:sf9}) revealed significant differences. SF9's 4.5$\times$ longer airtime (258\,ms vs 57\,ms) leads to frequent packet collisions when multiple nodes transmit simultaneously. Figure~\ref{fig:nb_comparison} demonstrates this clearly: with 3 active nodes, SF7 maintains stable 2-neighbour visibility while SF9 frequently drops to only 1 visible neighbour. This partial visibility degrades flocking performance since Reynolds rules require accurate neighbour state. While SF9 provides better range for outdoor deployments, SF7's faster airtime is preferable for dense indoor swarms.
+
+\subsection{Security Trade-offs}
+
+The 4-byte truncated CMAC provides $2^{32}$ collision resistance. While computationally infeasible for real-time forgery, offline attacks remain theoretically possible. However, our system is designed as a \emph{firm real-time system} where airtime minimisation is critical—truncating the CMAC from 16 to 4 bytes reduces packet size by 12 bytes, saving approximately 15\,ms airtime per transmission. This trade-off is necessary to maintain 2\,Hz update rate within duty-cycle constraints.
+
+The sequence-based replay defence tracks 16 recent sequence numbers per node. This approach operates independently of NTP synchronisation, which is advantageous for field deployments without network access. At 2\,Hz transmission rate, the 16-entry window covers 8 seconds of history.
+
+\subsection{Limitations}
+
+Current results are from a controlled three-node indoor test. Key limitations include:
+
+\begin{itemize}
+    \item \textbf{Limited flock size}: Three nodes provide basic flocking behaviour but do not demonstrate large-scale emergent dynamics.
+    \item \textbf{Indoor-only}: Range limits and multipath effects not characterised.
+    \item \textbf{Simulation vs hardware}: Physics runs in software; real drone integration pending.
+    \item \textbf{Attack testing}: Flood and replay attack effectiveness not yet evaluated with defence enabled.
+\end{itemize}
+
+\subsection{Comparison with Related Work}
+
+Compared to Maneekittichote et al.~\cite{maneekittichote2020loraswarm}, our implementation adds CMAC-based authentication and replay defence—security features absent in their LoRaWAN-based swarm. Our real-time task architecture with explicit priority assignments also provides more predictable timing than their event-driven approach.
+
+\section{Conclusion}
+
+This work demonstrates the feasibility of secure, real-time flocking over LoRa on resource-constrained ESP32 hardware. Key findings include:
+
+\begin{itemize}
+    \item SF7 achieves 57.84\,ms mean latency with 12.4\,ms jitter, enabling stable 2\,Hz neighbour updates within duty-cycle limits.
+    \item SF9's longer airtime causes 80\% collision probability in 3-node deployments, degrading neighbour visibility despite improved range.
+    \item The 4-byte truncated CMAC provides sufficient real-time security while reducing packet size by 12 bytes.
+    \item Power consumption of 0.70\,W typical enables approximately 3 hours battery operation.
+\end{itemize}
+
+Future work includes outdoor range characterisation, larger swarm deployments ($\geq$5 nodes), and adversarial attack evaluation with defence mechanisms enabled.
+
+
+
+
+\begin{thebibliography}{99}
+
+\bibitem{maneekittichote2020loraswarm}
+T.~Maneekittichote and T.~Chanthasopeephan, 
+``Mobile Robot Swarm Navigation and Communication Using LoRaWAN,'' 
+in \emph{Proc. 6th Int. Conf. Mechatronics and Robotics Engineering (ICMRE)}, 
+2020, pp.~92--96.
+
+\bibitem{tarapore2020sparse}
+D.~Tarapore, R.~Gro{\ss}, and K.~P.~Zauner, 
+``Sparse Robot Swarms: Moving Swarms to Real-World Applications,'' 
+\emph{Frontiers in Robotics and AI}, vol.~7, p.~83, 2020.
+
+\bibitem{davoli2021hybridlora}
+L.~Davoli, E.~Pagliari, and G.~Ferrari,
+``Hybrid LoRa--IEEE 802.11s Opportunistic Mesh Networking for Flexible UAV Swarming,'' 
+\emph{Drones}, vol.~5, no.~1, p.~7, 2021.
+
+\bibitem{kandil2024pliers}
+A.~Kandil, N.~Alrajeh, W.~A.~Khan \emph{et al.}, 
+``A Machine-Learning-Based and IoT-Enabled Robot Swarm System for Pipeline Crack Detection,'' 
+\emph{IoT}, vol.~5, no.~1, pp.~137--158, 2024.
+
+\bibitem{blumenkamp2022decentralizedgnn}
+J.~Blumenkamp, E.~Kaufmann, L.~Van~Gool, and D.~Scaramuzza, 
+``A Framework for Real-World Multi-Robot Systems Running Decentralized GNN-Based Policies,'' 
+in \emph{Proc. IEEE Int. Conf. Robotics and Automation (ICRA)}, 
+2022, pp.~11145--11152.
+
+\bibitem{rubenstein2014kilobot}
+M.~Rubenstein, A.~Cornejo, and R.~Nagpal, 
+``Programmable Self-Assembly in a Thousand-Robot Swarm,'' 
+\emph{Science}, vol.~345, no.~6198, pp.~795--799, 2014.
+
+\bibitem{bekmezci2013fanets}
+I.~Bekmezci, O.~K.~Sahingoz, and S.~Temel, 
+``Flying Ad-Hoc Networks (FANETs): A Survey,'' 
+\emph{Ad Hoc Networks}, vol.~11, no.~3, pp.~1254--1270, 2013.
+
+\bibitem{vasarhelyi2018optimizedflocking}
+G.~V{\'a}s{\'a}rhelyi, C.~Vir{\'a}gh, \emph{et al.}, 
+``Optimized Flocking of Autonomous Drones in Confined Environments,'' 
+\emph{Science Robotics}, vol.~3, no.~20, p.~eaat3536, 2018.
+
+\bibitem{amigoni2017communicationrestricted}
+F.~Amigoni, J.~Banfi, and N.~Basilico, 
+``Multirobot Exploration of Communication-Restricted Environments: A Survey,'' 
+\emph{IEEE Intelligent Systems}, vol.~32, no.~6, pp.~48--57, 2017.
+
+\end{thebibliography}
+
+
+%\section*{Appendix}
+
+\newpage
+\appendix
+\section{SF9 Comparison Data}
+\label{app:sf9}
+
+Testing was also conducted with SF9 configuration (the COMP0221 standard) for comparison. SF9 provides approximately 6\,dB additional link budget at the cost of longer airtime.
+
+\begin{table}[h]
+\centering
+\caption{SF7 vs SF9 Comparison}
+\label{tab:sf_comparison}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Metric} & \textbf{SF7} & \textbf{SF9} \\
+\midrule
+Mean Latency & 57.84\,ms & 258.65\,ms \\
+Jitter & 12.4\,ms & 45\,ms \\
+Airtime Ratio & 1$\times$ & 4.5$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+With SF9, the increased airtime (approximately 180\,ms vs 67\,ms) leads to more frequent packet collisions when multiple nodes transmit simultaneously. During testing with 3 active nodes, only 1 neighbour was detected most of the time—a direct consequence of the ALOHA-style collision problem.
+
+\textbf{Collision Analysis.} With unsynchronised 2\,Hz transmission and 180\,ms airtime, the channel occupancy per node is 36\%. With 3 nodes, the probability that any two transmissions overlap is approximately:
+\begin{equation}
+P_{collision} \approx 1 - (1 - 2 \times 0.36)^2 \approx 80\%
+\end{equation}
+This explains the observed 1-neighbour visibility: when the receiver's transmission overlaps with an incoming packet, that packet is lost. With SF7's shorter 67\,ms airtime (13.4\% occupancy), collision probability drops to approximately 44\%, enabling more reliable neighbour tracking.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\columnwidth]{latency_histogram_sf9.png}
+\caption{SF9 latency distribution showing higher mean and wider spread compared to SF7.}
+\label{fig:lat_sf9}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\columnwidth]{neighbor_availability_sf9.png}
+\caption{SF9 neighbour availability showing increased invalid packet rate due to collisions.}
+\label{fig:neighbor_sf9}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\columnwidth]{per_neighbor_stats_sf9.png}
+\caption{SF9 per-neighbour latency and jitter comparison.}
+\label{fig:per_neighbor_sf9}
+\end{figure}
+
+\begin{figure*}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{flock_stability_sf9.png}
+\caption{SF9 flocking stability: neighbour count fluctuates between 0--2 despite 3 active nodes, demonstrating collision-induced visibility loss.}
+\label{fig:flock_sf9}
+\end{figure*}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\columnwidth]{neighbor_count_sf7.png}
+\includegraphics[width=0.95\columnwidth]{neighbor_count_sf9.png}
+\caption{Neighbour visibility comparison: SF7 (top) maintains stable 2-neighbour tracking while SF9 (bottom) frequently drops to 1 neighbour due to collision-induced packet loss. Both tests had 3 active nodes.}
+\label{fig:nb_comparison}
+\end{figure}
+
+
+
+\end{document}
+

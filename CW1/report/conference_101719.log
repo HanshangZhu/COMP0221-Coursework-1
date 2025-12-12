@@ -1,0 +1,14 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.12)  12 DEC 2025 01:29
+entering extended mode
+ restricted \write18 enabled.
+ %&-line parsing enabled.
+**./conference_101719.tex
+(conference_101719.tex
+LaTeX2e <2023-11-01> patch level 1
+L3 programming layer <2024-01-04>
+! Interruption.
+<argument> \__file_size:n {IEEEtran.cls}
+                                        
+l.2 \IEEEoverridecommandlockouts
+                                
+? 
