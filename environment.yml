@@ -1,0 +1,11 @@
+name: comp0221
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - tk
+  - pip
+  - pip:
+    - cryptography==42.0.8
+    - matplotlib>=3.8.0
+    - paho-mqtt==2.1.0

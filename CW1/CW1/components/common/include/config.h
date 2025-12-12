@@ -37,7 +37,7 @@
 //  3. Team Configuration
 // ============================================================
 
-#define MY_TEAM_ID          1   // Team ID
+#define MY_TEAM_ID          1   // Team ID (Change this to your assigned team ID)
 
 
 // ============================================================
